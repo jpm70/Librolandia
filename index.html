@@ -452,7 +452,6 @@
   <div class="hero-sources">
     <div class="src-badge"><span class="src-dot"></span> Project Gutenberg</div>
     <div class="src-badge"><span class="src-dot"></span> Open Library</div>
-    <div class="src-badge"><span class="src-dot"></span> Standard Ebooks</div>
   </div>
 </div>
 
@@ -490,7 +489,6 @@
   <button class="pill on" data-s="all" onclick="setSrc('all',this)">Todas</button>
   <button class="pill" data-s="gutenberg" onclick="setSrc('gutenberg',this)">Gutenberg</button>
   <button class="pill" data-s="openlibrary" onclick="setSrc('openlibrary',this)">Open Library</button>
-  <button class="pill" data-s="standard" onclick="setSrc('standard',this)">Standard Ebooks</button>
 </div>
 
 <div class="progress-bar"><div class="progress-inner" id="bar"></div></div>
@@ -544,7 +542,6 @@ async function run(page){
   const tasks=[];
   if(srcFilter==='all'||srcFilter==='gutenberg') tasks.push(fetchGutenberg(q,lang));
   if(srcFilter==='all'||srcFilter==='openlibrary') tasks.push(fetchOpenLibrary(q,lang));
-  if(srcFilter==='all'||srcFilter==='standard') tasks.push(fetchStandard(q,lang));
   bar(50);
   const res=await Promise.allSettled(tasks);
   bar(90);
@@ -554,11 +551,24 @@ async function run(page){
   setTimeout(()=>bar(0),700);
 }
 
+async function getJSON(url,ms=10000,retries=1){
+  for(let i=0;;i++){
+    const ctl=new AbortController(), t=setTimeout(()=>ctl.abort(),ms);
+    try{
+      const r=await fetch(url,{signal:ctl.signal});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      return await r.json();
+    }catch(e){ if(i>=retries) throw e; }
+    finally{ clearTimeout(t); }
+  }
+}
+// Open Library usa códigos de 3 letras
+const OL_LANG={es:'spa',en:'eng',fr:'fre',de:'ger',it:'ita',pt:'por',ru:'rus',zh:'chi',ja:'jpn',ar:'ara',la:'lat'};
+
 async function fetchGutenberg(q,lang){
   let url=`https://gutendex.com/books/?search=${encodeURIComponent(q)}&page=1`;
   if(lang) url+=`&languages=${lang}`;
-  const r=await fetch(url);
-  const d=await r.json();
+  const d=await getJSON(url);
   return (d.results||[]).slice(0,12).map(b=>{
     const f=b.formats||{};
     const dls=[];
@@ -571,14 +581,14 @@ async function fetchGutenberg(q,lang){
 }
 
 async function fetchOpenLibrary(q,lang){
-  let url=`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=12&fields=key,title,author_name,cover_i,first_publish_year,ia,language`;
-  if(lang) url+=`&language=${lang}`;
-  const r=await fetch(url);
-  const d=await r.json();
-  return (d.docs||[]).slice(0,12).map(b=>{
+  let url=`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=40&fields=key,title,author_name,cover_i,first_publish_year,ia,language,ebook_access`;
+  if(lang) url+=`&language=${OL_LANG[lang]||lang}`;
+  const d=await getJSON(url);
+  const docs=(d.docs||[]).slice().sort((a,b)=>(b.ebook_access==='public')-(a.ebook_access==='public'));
+  return docs.slice(0,12).map(b=>{
     const ia=b.ia&&b.ia[0];
     const dls=[];
-    if(ia){
+    if(ia&&b.ebook_access==='public'){
       dls.push({l:'EPUB',u:`https://archive.org/download/${ia}/${ia}.epub`});
       dls.push({l:'PDF',u:`https://archive.org/download/${ia}/${ia}.pdf`});
     }
@@ -587,35 +597,8 @@ async function fetchOpenLibrary(q,lang){
   });
 }
 
-async function fetchStandard(q,lang){
-  if(lang&&lang!=='en') return [];
-  try{
-    const r=await fetch('https://standardebooks.org/opds/all');
-    const txt=await r.text();
-    const xml=new DOMParser().parseFromString(txt,'application/xml');
-    const entries=Array.from(xml.querySelectorAll('entry'));
-    const ql=q.toLowerCase();
-    const matched=entries.filter(e=>{
-      const t=(e.querySelector('title')?.textContent||'').toLowerCase();
-      const a=(e.querySelector('author name')?.textContent||'').toLowerCase();
-      return t.includes(ql)||a.includes(ql);
-    }).slice(0,8);
-    return matched.map(e=>{
-      const title=e.querySelector('title')?.textContent||'';
-      const author=e.querySelector('author name')?.textContent||'';
-      const epubL=e.querySelector('link[type="application/epub+zip"]');
-      const coverL=e.querySelector('link[rel="http://opds-spec.org/image"]');
-      const id=e.querySelector('id')?.textContent||'https://standardebooks.org';
-      const dls=[];
-      if(epubL) dls.push({l:'EPUB',u:epubL.getAttribute('href')});
-      dls.push({l:'Ver libro',u:id});
-      return{title,author:author||'Anónimo',cover:coverL?`https://standardebooks.org${coverL.getAttribute('href')}`:null,src:'Standard Ebooks',year:'',dls,lang:'en'};
-    });
-  }catch(e){ return []; }
-}
-
-const SRC_CLS={Gutenberg:'src-g','Open Library':'src-o','Standard Ebooks':'src-s'};
-const SRC_LABEL={Gutenberg:'Gutenberg','Open Library':'Open Library','Standard Ebooks':'Std. Ebooks'};
+const SRC_CLS={Gutenberg:'src-g','Open Library':'src-o'};
+const SRC_LABEL={Gutenberg:'Gutenberg','Open Library':'Open Library'};
 
 function render(page){
   const wrap=document.getElementById('resultsWrap');
